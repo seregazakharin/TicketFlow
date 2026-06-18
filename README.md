@@ -1,17 +1,7 @@
 # TicketFlow
 
-TicketFlow - учебный backend-проект на Go для подготовки к junior backend interview.
-Это небольшая платформа бронирования билетов, построенная как набор микросервисов с
+TicketFlow - это небольшая платформа бронирования билетов, построенная как набор микросервисов с
 PostgreSQL, Redis и Kafka-compatible брокером Redpanda.
-
-Проект специально показывает темы, которые часто обсуждают на собеседованиях:
-
-- одновременная покупка билетов многими пользователями;
-- атомарное резервирование остатка билетов;
-- защита от повторных клиентских запросов через idempotency key;
-- Redis для кэша и временного состояния;
-- Kafka-события для развязки заказа и уведомлений;
-- разделение сервисов по зонам ответственности.
 
 ## Архитектура
 
@@ -143,55 +133,6 @@ curl -s http://localhost:8080/notifications \
 10. `order-service` публикует событие `order.created` в Kafka topic `orders`.
 11. `notification-service` читает событие из Kafka и сохраняет уведомление.
 
-## Почему Билеты Не Перепродаются
-
-Главная защита находится в `event-service`. Остаток билетов уменьшается одним атомарным SQL-запросом:
-
-```sql
-update events
-set available = available - $1
-where id = $2 and available >= $1
-returning available;
-```
-
-Если свободных билетов недостаточно, PostgreSQL не обновит строку, и сервис вернет ошибку.
-Это защищает от overselling даже при параллельных запросах.
-
-## Зачем Нужен Redis
-
-Redis используется в двух местах.
-
-Первое - кэш списка событий в `event-service`.
-`GET /events` сначала пробует прочитать список из Redis по ключу `events:list:v1`.
-Если кэша нет, сервис читает данные из PostgreSQL и кладет результат в Redis на 30 секунд.
-При создании события или резервировании билетов кэш сбрасывается.
-
-Второе - idempotency в `order-service`.
-Ключ строится из пользователя и клиентского `idempotency_key`:
-
-```text
-idem:orders:<user_id>:<idempotency_key>
-```
-
-Первый запрос записывает в Redis состояние `processing`.
-После завершения заказа в Redis сохраняется готовый JSON-ответ на 24 часа.
-Если клиент повторит тот же запрос, новый заказ не создастся.
-
-## Зачем Нужна Kafka / Redpanda
-
-В проекте используется Redpanda, но для приложения она выглядит как обычная Kafka.
-Go-код работает через библиотеку `github.com/segmentio/kafka-go`.
-
-`order-service` публикует события в topic `orders`:
-
-- `order.created`;
-- `order.rejected`.
-
-`notification-service` читает этот topic и создает уведомления.
-
-Так заказ и уведомления слабо связаны: создание заказа не обязано напрямую ждать всю
-логику уведомлений. Уведомления могут быть eventually consistent.
-
 ## Нагрузочная Проверка
 
 После создания события можно проверить конкурентную покупку:
@@ -219,30 +160,3 @@ make load    # запуск loadgen, нужен EVENT_ID
 ```bash
 make load EVENT_ID=evt_...
 ```
-
-## Переменные Окружения
-
-Основные переменные:
-
-| Переменная | Для чего нужна |
-| --- | --- |
-| DATABASE_URL | подключение к PostgreSQL |
-| REDIS_ADDR | адрес Redis |
-| KAFKA_BROKERS | список Kafka brokers |
-| JWT_SECRET | секрет для подписи JWT |
-| PASSWORD_PEPPER | pepper для хэширования паролей |
-| EVENT_SERVICE_URL | адрес event-service для order-service |
-
-В Docker Compose эти значения уже настроены для локального запуска.
-
-## Что Можно Обсудить На Собеседовании
-
-- Почему остаток билетов принадлежит `event-service`, а не `order-service`.
-- Почему idempotency key хранится в Redis через `SETNX`.
-- Почему Kafka publish после записи в БД теоретически может потеряться.
-- Как transactional outbox pattern решает проблему потери событий.
-- Почему уведомления могут быть eventually consistent.
-- Как горизонтально масштабировать `order-service`.
-- Почему атомарный SQL-запрос защищает от overselling.
-- Что нужно улучшить для production: bcrypt/argon2, refresh tokens, tracing, metrics,
-  retry/backoff, dead-letter topic, нормальный мигратор, transactional outbox.
