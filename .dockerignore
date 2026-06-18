@@ -1,0 +1,8 @@
+.cache/
+.git/
+.DS_Store
+.env
+bin/
+tmp/
+coverage.out
+postgres-data/
